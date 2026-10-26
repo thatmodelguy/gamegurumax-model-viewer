@@ -1,0 +1,8 @@
+bin/
+obj/
+.vs/
+dist/
+*.user
+*.suo
+src/SmokeTest/
+smoke_test.csx
