@@ -21,6 +21,7 @@ public partial class MainWindow : Window
     private FolderNode _folderRoot = new() { Name = "entitybank", RelativePath = "" };
     private readonly ObservableCollection<EntityRecord> _visibleEntities = new();
     private readonly ObservableCollection<FpeMapField> _mapFields = new();
+    private readonly ObservableCollection<FpeMapField> _animFields = new();
     private ICollectionView? _view;
     private string? _selectedFolderRelative;
     private EntityRecord? _selected;
@@ -32,6 +33,7 @@ public partial class MainWindow : Window
         InitializeComponent();
         EntityGrid.ItemsSource = _visibleEntities;
         MapFieldsList.ItemsSource = _mapFields;
+        AnimSlotsList.ItemsSource = _animFields;
         _view = CollectionViewSource.GetDefaultView(_visibleEntities);
         FieldCollisionMode.ItemsSource = FpeFieldOptions.CollisionModes;
         FieldCollisionMode.DisplayMemberPath = nameof(NamedIntOption.Label);
@@ -293,6 +295,10 @@ public partial class MainWindow : Window
             SelectIntOption(FieldCollisionMode, FpeFieldOptions.CollisionModes, _currentDoc.GetValue("collisionmode"));
             SelectIntOption(FieldDefaultStatic, FpeFieldOptions.DefaultStaticModes, _currentDoc.GetValue("defaultstatic"));
             FieldIsCharacter.Text = _currentDoc.GetValue("ischaracter") ?? "";
+            FieldAnimSpeed.Text = _currentDoc.GetValue("animspeed") ?? "";
+            FieldAnimMax.Text = _currentDoc.GetValue("animmax") ?? "";
+            FieldPlayAnimInEditor.Text = _currentDoc.GetValue("playanimineditor") ?? "";
+            LoadAnimFields(_currentDoc);
             LoadMapFields(_currentDoc);
             RawFpeBox.Text = _currentDoc.ToFpeText();
         }
@@ -348,8 +354,26 @@ public partial class MainWindow : Window
         FieldDefaultStatic.SelectedItem = null;
         FieldDefaultStatic.Text = "";
         FieldIsCharacter.Text = "";
+        FieldAnimSpeed.Text = "";
+        FieldAnimMax.Text = "";
+        FieldPlayAnimInEditor.Text = "";
+        _animFields.Clear();
         _mapFields.Clear();
         MapFieldsEmptyHint.Visibility = Visibility.Collapsed;
+    }
+
+    private void LoadAnimFields(FpeDocument doc)
+    {
+        _animFields.Clear();
+        foreach (var (key, value) in doc.GetAnimSlots()
+                     .OrderBy(e => int.TryParse(e.Key.AsSpan(4), out var n) ? n : int.MaxValue))
+        {
+            _animFields.Add(new FpeMapField
+            {
+                Key = key,
+                Value = value
+            });
+        }
     }
 
     private void LoadMapFields(FpeDocument doc)
@@ -372,6 +396,40 @@ public partial class MainWindow : Window
         MapFieldsEmptyHint.Visibility = _mapFields.Count == 0
             ? Visibility.Visible
             : Visibility.Collapsed;
+    }
+
+    private void AddAnimSlot_Click(object sender, RoutedEventArgs e)
+    {
+        var next = 0;
+        foreach (var slot in _animFields)
+        {
+            if (int.TryParse(slot.Key.AsSpan(4), out var n) && n >= next)
+                next = n + 1;
+        }
+
+        _animFields.Add(new FpeMapField
+        {
+            Key = "anim" + next,
+            Value = "0,0"
+        });
+
+        SyncAnimMaxFromSlots();
+        StatusText.Text = $"Added anim{next} — remember to Save FPE";
+    }
+
+    private void RemoveAnimSlot_Click(object sender, RoutedEventArgs e)
+    {
+        if (sender is not FrameworkElement { Tag: FpeMapField slot })
+            return;
+
+        _animFields.Remove(slot);
+        SyncAnimMaxFromSlots();
+        StatusText.Text = $"Removed {slot.Key} — remember to Save FPE";
+    }
+
+    private void SyncAnimMaxFromSlots()
+    {
+        FieldAnimMax.Text = _animFields.Count.ToString();
     }
 
     private void SaveFpe_Click(object sender, RoutedEventArgs e)
@@ -439,8 +497,42 @@ public partial class MainWindow : Window
         SetIfPresent(doc, "defaultstatic", GetIntOptionValue(FieldDefaultStatic));
         SetIfPresent(doc, "ischaracter", FieldIsCharacter.Text);
 
+        ApplyAnimFieldsToDoc(doc);
+
         foreach (var map in _mapFields)
             SetIfPresent(doc, map.Key, map.Value);
+    }
+
+    private void ApplyAnimFieldsToDoc(FpeDocument doc)
+    {
+        var keepKeys = new HashSet<string>(
+            _animFields.Select(s => s.Key),
+            StringComparer.OrdinalIgnoreCase);
+
+        // Drop animN keys removed in the form
+        foreach (var (key, _) in doc.GetAnimSlots().ToList())
+        {
+            if (!keepKeys.Contains(key))
+                doc.RemoveKey(key);
+        }
+
+        // Only write remaining anim section keys when the form has something to say
+        var hasAnimContent = !string.IsNullOrWhiteSpace(FieldAnimSpeed.Text)
+            || !string.IsNullOrWhiteSpace(FieldAnimMax.Text)
+            || !string.IsNullOrWhiteSpace(FieldPlayAnimInEditor.Text)
+            || _animFields.Count > 0;
+
+        if (!hasAnimContent)
+            return;
+
+        doc.SetAnimRelatedValue("animspeed", FieldAnimSpeed.Text.Trim());
+        doc.SetAnimRelatedValue("animmax", string.IsNullOrWhiteSpace(FieldAnimMax.Text)
+            ? _animFields.Count.ToString()
+            : FieldAnimMax.Text.Trim());
+        doc.SetAnimRelatedValue("playanimineditor", FieldPlayAnimInEditor.Text.Trim());
+
+        foreach (var slot in _animFields)
+            doc.SetAnimRelatedValue(slot.Key, slot.Value ?? "");
     }
 
     private static void SetIfPresent(FpeDocument doc, string key, string value)
