@@ -46,20 +46,25 @@ public sealed class SharedReferenceIndex
         return _fileToFpes.TryGetValue(full, out var set) ? set.Count : 0;
     }
 
-    public bool IsShared(string filePath, string excludingFpePath)
+    public bool IsShared(string filePath, string excludingFpePath, ISet<string>? alsoRemovingFpes = null)
     {
         var full = Path.GetFullPath(filePath);
         var fpe = Path.GetFullPath(excludingFpePath);
         if (!_fileToFpes.TryGetValue(full, out var set))
             return false;
-        return set.Any(p => !p.Equals(fpe, StringComparison.OrdinalIgnoreCase));
+        return set.Any(p =>
+            !p.Equals(fpe, StringComparison.OrdinalIgnoreCase)
+            && (alsoRemovingFpes is null || !alsoRemovingFpes.Contains(p)));
     }
 
     /// <summary>
-    /// Files that can be safely deleted with this entity (not shared).
+    /// Files that can be safely deleted with this entity (not shared outside the delete set).
     /// Always includes the FPE itself.
     /// </summary>
-    public List<string> GetDeletableFiles(string fpePath, IEnumerable<string> associatedFiles)
+    public List<string> GetDeletableFiles(
+        string fpePath,
+        IEnumerable<string> associatedFiles,
+        ISet<string>? alsoRemovingFpes = null)
     {
         var fpeFull = Path.GetFullPath(fpePath);
         var result = new List<string>();
@@ -71,7 +76,7 @@ public sealed class SharedReferenceIndex
                 result.Add(full);
                 continue;
             }
-            if (!IsShared(full, fpeFull))
+            if (!IsShared(full, fpeFull, alsoRemovingFpes))
                 result.Add(full);
         }
         if (!result.Contains(fpeFull, StringComparer.OrdinalIgnoreCase))

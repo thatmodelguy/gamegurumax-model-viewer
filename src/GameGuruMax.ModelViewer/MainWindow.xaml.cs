@@ -19,7 +19,8 @@ public partial class MainWindow : Window
     private List<EntityRecord> _allEntities = new();
     private SharedReferenceIndex _refIndex = new();
     private FolderNode _folderRoot = new() { Name = "entitybank", RelativePath = "" };
-    private readonly ObservableCollection<EntityRecord> _visibleEntities = new();
+    private readonly ObservableCollection<EntityListItem> _visibleEntities = new();
+    private readonly HashSet<string> _checkedFpePaths = new(StringComparer.OrdinalIgnoreCase);
     private readonly ObservableCollection<FpeMapField> _mapFields = new();
     private readonly ObservableCollection<FpeMapField> _animFields = new();
     private ICollectionView? _view;
@@ -27,6 +28,7 @@ public partial class MainWindow : Window
     private EntityRecord? _selected;
     private FpeDocument? _currentDoc;
     private CancellationTokenSource? _scanCts;
+    private bool _suppressSelectAllSync;
 
     public MainWindow()
     {
@@ -203,6 +205,88 @@ public partial class MainWindow : Window
         EntityGrid.ScrollIntoView(match);
     }
 
+    private List<EntityRecord> GetCheckedEntities()
+        => _visibleEntities.Where(i => i.IsChecked).Select(i => i.Entity).ToList();
+
+    private List<EntityRecord> GetActionTargets()
+    {
+        var checkedEntities = GetCheckedEntities();
+        if (checkedEntities.Count > 0)
+            return checkedEntities;
+        if (_selected is not null)
+            return [_selected];
+        return [];
+    }
+
+    private void SelectAllCheck_Click(object sender, RoutedEventArgs e)
+    {
+        var check = SelectAllCheck.IsChecked == true;
+        _suppressSelectAllSync = true;
+        try
+        {
+            foreach (var item in _visibleEntities)
+                item.IsChecked = check;
+        }
+        finally
+        {
+            _suppressSelectAllSync = false;
+        }
+        UpdateCheckedUi();
+    }
+
+    private void OnEntityCheckedChanged(object? sender, EventArgs e)
+    {
+        if (sender is EntityListItem item)
+        {
+            if (item.IsChecked)
+                _checkedFpePaths.Add(item.FpePath);
+            else
+                _checkedFpePaths.Remove(item.FpePath);
+        }
+
+        if (!_suppressSelectAllSync)
+            UpdateCheckedUi();
+    }
+
+    private void UpdateCheckedUi()
+    {
+        var checkedCount = _visibleEntities.Count(i => i.IsChecked);
+        var visibleCount = _visibleEntities.Count;
+
+        if (checkedCount > 0)
+        {
+            CheckedCountText.Text = $"{checkedCount} checked";
+            CheckedCountText.Visibility = Visibility.Visible;
+            MoveButton.Content = $"Move ({checkedCount})";
+            DeleteButton.Content = $"Delete ({checkedCount})";
+            OptimizeButton.Content = $"Optimize ({checkedCount})";
+        }
+        else
+        {
+            CheckedCountText.Visibility = Visibility.Collapsed;
+            MoveButton.Content = "Move";
+            DeleteButton.Content = "Delete";
+            OptimizeButton.Content = "Optimize";
+        }
+
+        _suppressSelectAllSync = true;
+        try
+        {
+            if (visibleCount == 0)
+                SelectAllCheck.IsChecked = false;
+            else if (checkedCount == 0)
+                SelectAllCheck.IsChecked = false;
+            else if (checkedCount == visibleCount)
+                SelectAllCheck.IsChecked = true;
+            else
+                SelectAllCheck.IsChecked = null; // indeterminate
+        }
+        finally
+        {
+            _suppressSelectAllSync = false;
+        }
+    }
+
     private static TreeViewItem CreateTreeItem(FolderNode node)
     {
         var item = new TreeViewItem
@@ -229,6 +313,10 @@ public partial class MainWindow : Window
     private void ApplyFilter()
     {
         var filter = FilterBox.Text.Trim();
+        var selectedPath = _selected?.FpePath;
+
+        foreach (var item in _visibleEntities)
+            item.CheckedChanged -= OnEntityCheckedChanged;
         _visibleEntities.Clear();
 
         IEnumerable<EntityRecord> query = _allEntities;
@@ -249,15 +337,29 @@ public partial class MainWindow : Window
                 || e.Stem.Contains(filter, StringComparison.OrdinalIgnoreCase));
         }
 
+        // Drop checks for entities that no longer exist after a rescan
+        var livePaths = new HashSet<string>(
+            _allEntities.Select(e => e.FpePath),
+            StringComparer.OrdinalIgnoreCase);
+        _checkedFpePaths.RemoveWhere(p => !livePaths.Contains(p));
+
         foreach (var e in query.OrderBy(e => e.DisplayName, StringComparer.OrdinalIgnoreCase))
-            _visibleEntities.Add(e);
+        {
+            var item = new EntityListItem(e, _checkedFpePaths.Contains(e.FpePath));
+            item.CheckedChanged += OnEntityCheckedChanged;
+            _visibleEntities.Add(item);
+        }
 
         EntityCountText.Text = $"Total: {_visibleEntities.Count}";
+        UpdateCheckedUi();
+
+        if (!string.IsNullOrWhiteSpace(selectedPath))
+            RestoreEntitySelection(selectedPath);
     }
 
     private void EntityGrid_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
-        _selected = EntityGrid.SelectedItem as EntityRecord;
+        _selected = (EntityGrid.SelectedItem as EntityListItem)?.Entity;
         LoadSelectedEntity();
     }
 
@@ -543,28 +645,31 @@ public partial class MainWindow : Window
 
     private void Optimize_Click(object sender, RoutedEventArgs e)
     {
-        if (_selected is null)
+        var targets = GetActionTargets();
+        if (targets.Count == 0)
         {
-            MessageBox.Show(this, "Select a model first.", "Optimize", MessageBoxButton.OK, MessageBoxImage.Information);
+            MessageBox.Show(this, "Select or check a model first.", "Optimize", MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
 
-        var dialog = new OptimizeWindow(_paths, _refIndex, _allEntities, _selected)
+        var dialog = new OptimizeWindow(_paths, _refIndex, _allEntities, targets)
         {
             Owner = this
         };
         if (dialog.ShowDialog() == true)
         {
             StatusText.Text = dialog.Result?.Messages.FirstOrDefault() ?? "Optimize finished.";
+            _checkedFpePaths.Clear();
             _ = RescanAsync();
         }
     }
 
     private void Move_Click(object sender, RoutedEventArgs e)
     {
-        if (_selected is null)
+        var targets = GetActionTargets();
+        if (targets.Count == 0)
         {
-            MessageBox.Show(this, "Select an entity first.", "Move", MessageBoxButton.OK, MessageBoxImage.Information);
+            MessageBox.Show(this, "Select or check a model first.", "Move", MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
 
@@ -585,7 +690,7 @@ public partial class MainWindow : Window
 
         try
         {
-            var plan = FileOperations.PlanMove(_selected, destDir, _paths);
+            var plan = FileOperations.PlanMoveMany(targets, destDir, _paths);
             if (plan.FilesToMove.Count == 0)
             {
                 MessageBox.Show(this, string.Join("\n", plan.Warnings.DefaultIfEmpty("Nothing to move.")),
@@ -593,9 +698,12 @@ public partial class MainWindow : Window
                 return;
             }
 
+            var label = targets.Count == 1
+                ? targets[0].DisplayName
+                : $"{targets.Count} models";
             var confirm = new ConfirmFilesWindow(
                 "Confirm move",
-                $"Move {_selected.DisplayName} to:\n{destDir}\n\nFiles:",
+                $"Move {label} to:\n{destDir}\n\nFiles:",
                 plan.FilesToMove.Select(Path.GetFileName)!)
             {
                 Owner = this
@@ -611,9 +719,17 @@ public partial class MainWindow : Window
                     return;
             }
 
-            _refIndex.RemoveEntity(_selected.FpePath);
-            FileOperations.ExecuteMove(plan, _paths, _selected);
-            StatusText.Text = "Moved " + _selected.DisplayName;
+            foreach (var entity in targets)
+                _refIndex.RemoveEntity(entity.FpePath);
+
+            FileOperations.ExecuteMoveMany(plan, _paths, targets);
+
+            foreach (var entity in targets)
+                _checkedFpePaths.Remove(entity.FpePath);
+
+            StatusText.Text = targets.Count == 1
+                ? "Moved " + targets[0].DisplayName
+                : $"Moved {targets.Count} models";
             _ = RescanAsync();
         }
         catch (Exception ex)
@@ -622,20 +738,96 @@ public partial class MainWindow : Window
         }
     }
 
-    private void Delete_Click(object sender, RoutedEventArgs e)
+    private void BrowseMapTexture_Click(object sender, RoutedEventArgs e)
     {
         if (_selected is null)
         {
-            MessageBox.Show(this, "Select an entity first.", "Delete", MessageBoxButton.OK, MessageBoxImage.Information);
+            MessageBox.Show(this, "Select a model first.", "Browse texture", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        if (sender is not FrameworkElement { Tag: FpeMapField field })
+            return;
+
+        var entityDir = Path.GetDirectoryName(_selected.FpePath) ?? _paths.EntityBankRoot;
+        var picker = new OpenFileDialog
+        {
+            Title = $"Choose texture for {field.Key}",
+            InitialDirectory = Directory.Exists(entityDir) ? entityDir : _paths.EntityBankRoot,
+            Filter =
+                "Texture files|*.dds;*.png;*.jpg;*.jpeg;*.tga;*.bmp;*.webp|" +
+                "DDS|*.dds|PNG|*.png|JPEG|*.jpg;*.jpeg|All files|*.*"
+        };
+
+        if (picker.ShowDialog(this) != true)
+            return;
+
+        try
+        {
+            var source = picker.FileName;
+            var destName = Path.GetFileName(source);
+            var destPath = Path.Combine(entityDir, destName);
+            var overwrite = false;
+
+            if (!string.Equals(Path.GetFullPath(source), Path.GetFullPath(destPath), StringComparison.OrdinalIgnoreCase)
+                && File.Exists(destPath))
+            {
+                var answer = MessageBox.Show(
+                    this,
+                    $"A file named {destName} already exists in the model folder.\n\nOverwrite it?",
+                    "Browse texture",
+                    MessageBoxButton.YesNoCancel,
+                    MessageBoxImage.Warning);
+                if (answer == MessageBoxResult.Cancel)
+                    return;
+                if (answer == MessageBoxResult.No)
+                    return;
+                overwrite = true;
+            }
+
+            var fileName = FileOperations.ImportTextureBesideEntity(_selected, source, _paths, overwrite);
+            field.Value = fileName;
+
+            // Keep associated-files list in sync for this session
+            var importedFull = Path.Combine(entityDir, fileName);
+            if (!_selected.AssociatedFiles.Any(f =>
+                    f.Equals(importedFull, StringComparison.OrdinalIgnoreCase)))
+            {
+                _selected.AssociatedFiles = _selected.AssociatedFiles
+                    .Append(importedFull)
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+                AssociatedList.Items.Clear();
+                foreach (var f in _selected.AssociatedFiles)
+                    AssociatedList.Items.Add(Path.GetFileName(f));
+            }
+
+            StatusText.Text = $"Set {field.Key} to {fileName} — remember to Save FPE";
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, ex.Message, "Browse texture", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+    }
+
+    private void Delete_Click(object sender, RoutedEventArgs e)
+    {
+        var targets = GetActionTargets();
+        if (targets.Count == 0)
+        {
+            MessageBox.Show(this, "Select or check a model first.", "Delete", MessageBoxButton.OK, MessageBoxImage.Information);
             return;
         }
 
         try
         {
-            var plan = FileOperations.PlanDelete(_selected, _refIndex, _paths);
+            var plan = FileOperations.PlanDeleteMany(targets, _refIndex, _paths);
+            var label = targets.Count == 1
+                ? targets[0].DisplayName
+                : $"{targets.Count} models";
             var confirm = new ConfirmFilesWindow(
                 "Confirm delete",
-                $"Send these files for {_selected.DisplayName} to the Recycle Bin?",
+                $"Send these files for {label} to the Recycle Bin?",
                 plan.FilesToDelete.Select(f => Path.GetFileName(f)!),
                 plan.FilesSkippedShared.Select(f => Path.GetFileName(f)!))
             {
@@ -647,11 +839,16 @@ public partial class MainWindow : Window
             FileOperations.ExecuteDelete(plan, _paths, sendToRecycleBin: true,
                 (path, recycle) => RecycleBin.DeleteFile(path, recycle));
 
-            // Best-effort thumbbank cleanup
-            TryDeleteThumbbank(_selected.RelativePath);
+            foreach (var entity in targets)
+            {
+                TryDeleteThumbbank(entity.RelativePath);
+                _refIndex.RemoveEntity(entity.FpePath);
+                _checkedFpePaths.Remove(entity.FpePath);
+            }
 
-            _refIndex.RemoveEntity(_selected.FpePath);
-            StatusText.Text = "Deleted " + _selected.DisplayName;
+            StatusText.Text = targets.Count == 1
+                ? "Deleted " + targets[0].DisplayName
+                : $"Deleted {targets.Count} models";
             _ = RescanAsync();
         }
         catch (Exception ex)

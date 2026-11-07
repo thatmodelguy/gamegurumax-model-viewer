@@ -10,7 +10,7 @@ public partial class OptimizeWindow : Window
     private readonly AppPaths _paths;
     private readonly SharedReferenceIndex _index;
     private readonly IReadOnlyList<EntityRecord> _allEntities;
-    private readonly EntityRecord _selected;
+    private readonly IReadOnlyList<EntityRecord> _targets;
     private OptimizePlan? _plan;
 
     public OptimizeResult? Result { get; private set; }
@@ -20,12 +20,24 @@ public partial class OptimizeWindow : Window
         SharedReferenceIndex index,
         IReadOnlyList<EntityRecord> allEntities,
         EntityRecord selected)
+        : this(paths, index, allEntities, [selected])
     {
+    }
+
+    public OptimizeWindow(
+        AppPaths paths,
+        SharedReferenceIndex index,
+        IReadOnlyList<EntityRecord> allEntities,
+        IReadOnlyList<EntityRecord> targets)
+    {
+        if (targets is null || targets.Count == 0)
+            throw new ArgumentException("At least one model is required.", nameof(targets));
+
         InitializeComponent();
         _paths = paths;
         _index = index;
         _allEntities = allEntities;
-        _selected = selected;
+        _targets = targets;
 
         ResolutionBox.Items.Add(new ComboBoxItem { Content = "Original (no resize)", Tag = 0, IsSelected = true });
         ResolutionBox.Items.Add(new ComboBoxItem { Content = "512", Tag = 512 });
@@ -37,7 +49,10 @@ public partial class OptimizeWindow : Window
         ConvertCheck.Checked += (_, _) => RebuildPlan();
         ConvertCheck.Unchecked += (_, _) => RebuildPlan();
 
-        HeaderText.Text = $"Optimize textures for: {_selected.DisplayName}";
+        // Multi-select already chose the targets — hide "entire folder" expand option.
+        if (_targets.Count > 1)
+            FolderCheck.Visibility = Visibility.Collapsed;
+
         RebuildPlan();
     }
 
@@ -54,27 +69,33 @@ public partial class OptimizeWindow : Window
             ConvertToDds = ConvertCheck.IsChecked == true,
             MaxResolution = max,
             DeleteOriginalsAfterConvert = DeleteOriginalsCheck.IsChecked == true,
-            EntireFolder = FolderCheck.IsChecked == true
+            EntireFolder = FolderCheck.IsChecked == true && _targets.Count == 1
         };
     }
 
     private List<EntityRecord> TargetEntities(OptimizeOptions options)
     {
-        if (!options.EntireFolder)
-            return [_selected];
+        if (options.EntireFolder && _targets.Count == 1)
+        {
+            var folder = _targets[0].FolderRelative;
+            return _allEntities
+                .Where(e => e.FolderRelative.Equals(folder, StringComparison.OrdinalIgnoreCase))
+                .ToList();
+        }
 
-        return _allEntities
-            .Where(e => e.FolderRelative.Equals(_selected.FolderRelative, StringComparison.OrdinalIgnoreCase))
-            .ToList();
+        return _targets.ToList();
     }
 
     private void RebuildPlan()
     {
         var options = CurrentOptions();
         var targets = TargetEntities(options);
-        HeaderText.Text = options.EntireFolder
-            ? $"Optimize textures for folder: {_selected.FolderRelative} ({targets.Count} models)"
-            : $"Optimize textures for: {_selected.DisplayName}";
+
+        HeaderText.Text = targets.Count == 1
+            ? $"Optimize textures for: {targets[0].DisplayName}"
+            : options.EntireFolder
+                ? $"Optimize textures for folder: {targets[0].FolderRelative} ({targets.Count} models)"
+                : $"Optimize textures for {targets.Count} selected models";
 
         _plan = TextureOptimizer.BuildPlan(targets, _index, _paths, options);
         PlanList.Items.Clear();

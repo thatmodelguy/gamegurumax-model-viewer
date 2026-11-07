@@ -29,6 +29,12 @@ public static class FileOperations
     }
 
     public static FileOpPlan PlanMove(EntityRecord entity, string destinationFolderAbsolute, AppPaths paths)
+        => PlanMoveMany([entity], destinationFolderAbsolute, paths);
+
+    public static FileOpPlan PlanMoveMany(
+        IReadOnlyList<EntityRecord> entities,
+        string destinationFolderAbsolute,
+        AppPaths paths)
     {
         var destDir = Path.GetFullPath(destinationFolderAbsolute);
         EnsureUnderEntityBank(paths, destDir);
@@ -36,36 +42,65 @@ public static class FileOperations
             throw new DirectoryNotFoundException(destDir);
 
         var plan = new FileOpPlan { DestinationFolder = destDir };
-        var sourceDir = Path.GetDirectoryName(entity.FpePath)!;
-
-        if (string.Equals(Path.GetFullPath(sourceDir), destDir, StringComparison.OrdinalIgnoreCase))
-        {
-            plan.Warnings.Add("Source and destination folders are the same.");
+        if (entities.Count == 0)
             return plan;
-        }
 
-        foreach (var file in entity.AssociatedFiles)
+        var files = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var destNames = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var entity in entities)
         {
-            var full = Path.GetFullPath(file);
-            if (!paths.IsUnderFilesRoot(full))
+            var sourceDir = Path.GetDirectoryName(entity.FpePath)!;
+            if (string.Equals(Path.GetFullPath(sourceDir), destDir, StringComparison.OrdinalIgnoreCase))
             {
-                plan.Warnings.Add($"Skipped (outside Files root): {full}");
+                plan.Warnings.Add($"{entity.DisplayName}: already in destination folder.");
                 continue;
             }
 
-            var destFile = Path.Combine(destDir, Path.GetFileName(full));
-            if (File.Exists(destFile)
-                && !string.Equals(full, destFile, StringComparison.OrdinalIgnoreCase))
+            foreach (var file in entity.AssociatedFiles)
             {
-                plan.Warnings.Add($"Destination already has file: {Path.GetFileName(full)}");
+                var full = Path.GetFullPath(file);
+                if (!paths.IsUnderFilesRoot(full))
+                {
+                    plan.Warnings.Add($"Skipped (outside Files root): {full}");
+                    continue;
+                }
+
+                if (!files.Add(full))
+                    continue;
+
+                var name = Path.GetFileName(full);
+                var destFile = Path.Combine(destDir, name);
+                if (File.Exists(destFile)
+                    && !string.Equals(full, destFile, StringComparison.OrdinalIgnoreCase))
+                {
+                    plan.Warnings.Add($"Destination already has file: {name}");
+                }
+
+                if (destNames.TryGetValue(name, out var other)
+                    && !other.Equals(full, StringComparison.OrdinalIgnoreCase))
+                {
+                    plan.Warnings.Add($"Multiple sources both named {name} — cannot move both into the same folder.");
+                }
+                else
+                {
+                    destNames[name] = full;
+                }
+
+                plan.FilesToMove.Add(full);
             }
-            plan.FilesToMove.Add(full);
         }
 
         return plan;
     }
 
     public static void ExecuteMove(FileOpPlan plan, AppPaths paths, EntityRecord entity)
+        => ExecuteMoveMany(plan, paths, [entity]);
+
+    public static void ExecuteMoveMany(
+        FileOpPlan plan,
+        AppPaths paths,
+        IReadOnlyList<EntityRecord> entities)
     {
         if (plan.DestinationFolder is null)
             throw new InvalidOperationException("No destination folder.");
@@ -80,43 +115,104 @@ public static class FileOperations
             var dest = Path.Combine(destDir, Path.GetFileName(full));
             if (string.Equals(full, dest, StringComparison.OrdinalIgnoreCase))
                 continue;
+            if (!File.Exists(full))
+                continue; // already moved as a shared file from another entity in the batch
             if (File.Exists(dest))
                 throw new IOException($"Cannot overwrite existing file: {dest}");
             File.Move(full, dest);
         }
 
-        // Relocate thumbbank preview if present
-        TryMoveThumbbankEntry(paths, entity.RelativePath, destDir);
+        foreach (var entity in entities)
+            TryMoveThumbbankEntry(paths, entity.RelativePath, destDir);
+    }
+
+    /// <summary>
+    /// Copies a texture into the entity folder and returns the filename to store in the FPE.
+    /// </summary>
+    public static string ImportTextureBesideEntity(
+        EntityRecord entity,
+        string sourceTexturePath,
+        AppPaths paths,
+        bool overwriteExisting)
+    {
+        var source = Path.GetFullPath(sourceTexturePath);
+        if (!File.Exists(source))
+            throw new FileNotFoundException("Texture not found.", source);
+
+        var entityDir = Path.GetDirectoryName(Path.GetFullPath(entity.FpePath))
+                        ?? throw new InvalidOperationException("Entity folder missing.");
+        EnsureUnderEntityBank(paths, entityDir);
+
+        var fileName = Path.GetFileName(source);
+        var dest = Path.Combine(entityDir, fileName);
+
+        if (string.Equals(source, dest, StringComparison.OrdinalIgnoreCase))
+            return fileName;
+
+        if (File.Exists(dest))
+        {
+            if (!overwriteExisting)
+                throw new IOException($"A file named {fileName} already exists in the model folder.");
+            File.Copy(source, dest, overwrite: true);
+        }
+        else
+        {
+            File.Copy(source, dest);
+        }
+
+        return fileName;
     }
 
     public static FileOpPlan PlanDelete(
         EntityRecord entity,
         SharedReferenceIndex index,
         AppPaths paths)
+        => PlanDeleteMany([entity], index, paths);
+
+    public static FileOpPlan PlanDeleteMany(
+        IReadOnlyList<EntityRecord> entities,
+        SharedReferenceIndex index,
+        AppPaths paths)
     {
         var plan = new FileOpPlan();
-        var deletable = index.GetDeletableFiles(entity.FpePath, entity.AssociatedFiles);
+        if (entities.Count == 0)
+            return plan;
 
-        foreach (var file in entity.AssociatedFiles)
+        var removing = new HashSet<string>(
+            entities.Select(e => Path.GetFullPath(e.FpePath)),
+            StringComparer.OrdinalIgnoreCase);
+
+        var toDelete = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var skippedShared = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var entity in entities)
         {
-            var full = Path.GetFullPath(file);
-            if (!paths.IsUnderFilesRoot(full))
+            var deletable = index.GetDeletableFiles(entity.FpePath, entity.AssociatedFiles, removing);
+
+            foreach (var file in entity.AssociatedFiles)
             {
-                plan.Warnings.Add($"Skipped (outside Files root): {full}");
-                continue;
+                var full = Path.GetFullPath(file);
+                if (!paths.IsUnderFilesRoot(full))
+                {
+                    plan.Warnings.Add($"Skipped (outside Files root): {full}");
+                    continue;
+                }
+
+                if (deletable.Contains(full, StringComparer.OrdinalIgnoreCase))
+                    toDelete.Add(full);
+                else
+                    skippedShared.Add(full);
             }
 
-            if (deletable.Contains(full, StringComparer.OrdinalIgnoreCase))
-                plan.FilesToDelete.Add(full);
-            else
-                plan.FilesSkippedShared.Add(full);
+            toDelete.Add(Path.GetFullPath(entity.FpePath));
         }
 
-        // Ensure FPE is listed
-        var fpe = Path.GetFullPath(entity.FpePath);
-        if (!plan.FilesToDelete.Contains(fpe, StringComparer.OrdinalIgnoreCase))
-            plan.FilesToDelete.Add(fpe);
+        // A file marked shared for one entity may still be deletable overall if every
+        // remaining reference is also in this batch — reclassify after the pass.
+        skippedShared.RemoveWhere(toDelete.Contains);
 
+        plan.FilesToDelete.AddRange(toDelete.OrderBy(p => p, StringComparer.OrdinalIgnoreCase));
+        plan.FilesSkippedShared.AddRange(skippedShared.OrderBy(p => p, StringComparer.OrdinalIgnoreCase));
         return plan;
     }
 

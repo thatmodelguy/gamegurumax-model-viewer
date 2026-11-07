@@ -86,6 +86,9 @@
                             <TextBlock x:Name="EntityCountText" Margin="10,0,0,0" VerticalAlignment="Center"
                                        Foreground="{StaticResource BrushTextMuted}" FontSize="12"
                                        Text="Total: 0"/>
+                            <TextBlock x:Name="CheckedCountText" Margin="10,0,0,0" VerticalAlignment="Center"
+                                       Foreground="{StaticResource BrushAccent}" FontSize="12"
+                                       Visibility="Collapsed"/>
                         </StackPanel>
                         <TextBox x:Name="FilterBox" Width="220" HorizontalAlignment="Right"
                                  VerticalContentAlignment="Center" Height="30"
@@ -94,20 +97,43 @@
                     </DockPanel>
                     <DataGrid x:Name="EntityGrid"
                               AutoGenerateColumns="False"
-                              IsReadOnly="True"
+                              IsReadOnly="False"
                               SelectionMode="Single"
                               CanUserAddRows="False"
                               CanUserDeleteRows="False"
+                              CanUserSortColumns="False"
                               GridLinesVisibility="Horizontal"
                               SelectionChanged="EntityGrid_SelectionChanged">
                         <DataGrid.Columns>
+                            <DataGridTemplateColumn Width="36" CanUserResize="False" CanUserSort="False">
+                                <DataGridTemplateColumn.Header>
+                                    <CheckBox x:Name="SelectAllCheck"
+                                              Margin="0"
+                                              IsThreeState="True"
+                                              ToolTip="Select / clear all visible models"
+                                              Click="SelectAllCheck_Click"/>
+                                </DataGridTemplateColumn.Header>
+                                <DataGridTemplateColumn.CellTemplate>
+                                    <DataTemplate>
+                                        <CheckBox Margin="0"
+                                                  HorizontalAlignment="Center"
+                                                  VerticalAlignment="Center"
+                                                  IsChecked="{Binding IsChecked, UpdateSourceTrigger=PropertyChanged, Mode=TwoWay}"
+                                                  ToolTip="Include in Optimize / Delete batch"/>
+                                    </DataTemplate>
+                                </DataGridTemplateColumn.CellTemplate>
+                            </DataGridTemplateColumn>
                             <DataGridTextColumn Header="Name" Binding="{Binding DisplayName}" Width="*"
+                                                IsReadOnly="True"
                                                 ElementStyle="{StaticResource EntityGridTextStyle}"/>
                             <DataGridTextColumn Header="File" Binding="{Binding FileName}" Width="140"
+                                                IsReadOnly="True"
                                                 ElementStyle="{StaticResource EntityGridTextStyle}"/>
                             <DataGridTextColumn Header="Folder" Binding="{Binding FolderRelative}" Width="160"
+                                                IsReadOnly="True"
                                                 ElementStyle="{StaticResource EntityGridTextStyle}"/>
-                            <DataGridTextColumn Header="Files" Binding="{Binding AssociatedFiles.Count}" Width="50"
+                            <DataGridTextColumn Header="Files" Binding="{Binding AssociatedFileCount}" Width="50"
+                                                IsReadOnly="True"
                                                 ElementStyle="{StaticResource EntityGridTextStyle}"/>
                         </DataGrid.Columns>
                     </DataGrid>
@@ -164,13 +190,16 @@
                         </Border>
 
                         <UniformGrid DockPanel.Dock="Bottom" Columns="2" Margin="0,10,0,0">
-                            <Button Content="Move" Style="{StaticResource GreenActionButton}"
-                                    Margin="0,0,6,6" Click="Move_Click"/>
-                            <Button Content="Delete" Style="{StaticResource BlueActionButton}"
-                                    Margin="0,0,0,6" Click="Delete_Click"/>
-                            <Button Content="Optimize" Style="{StaticResource ToolbarButton}"
+                            <Button x:Name="MoveButton" Content="Move" Style="{StaticResource GreenActionButton}"
+                                    Margin="0,0,6,6" Click="Move_Click"
+                                    ToolTip="Move the selected model, or all checked models"/>
+                            <Button x:Name="DeleteButton" Content="Delete" Style="{StaticResource BlueActionButton}"
+                                    Margin="0,0,0,6" Click="Delete_Click"
+                                    ToolTip="Delete the selected model, or all checked models"/>
+                            <Button x:Name="OptimizeButton" Content="Optimize" Style="{StaticResource ToolbarButton}"
                                     Margin="0,0,6,0" Click="Optimize_Click"
-                                    BorderBrush="{StaticResource BrushAccent}"/>
+                                    BorderBrush="{StaticResource BrushAccent}"
+                                    ToolTip="Optimize the selected model, or all checked models"/>
                             <Button Content="Save FPE" Style="{StaticResource OrangeActionButton}"
                                     Click="SaveFpe_Click"/>
                         </UniformGrid>
@@ -295,11 +324,20 @@
                                                         <Grid.ColumnDefinitions>
                                                             <ColumnDefinition Width="120"/>
                                                             <ColumnDefinition Width="*"/>
+                                                            <ColumnDefinition Width="Auto"/>
                                                         </Grid.ColumnDefinitions>
                                                         <TextBlock Grid.Column="0" Text="{Binding Key}"
                                                                    Style="{StaticResource FieldLabel}"
                                                                    ToolTip="{Binding Key}"/>
-                                                        <TextBox Grid.Column="1" Text="{Binding Value, UpdateSourceTrigger=PropertyChanged}"/>
+                                                        <TextBox Grid.Column="1"
+                                                                 Text="{Binding Value, UpdateSourceTrigger=PropertyChanged}"
+                                                                 Margin="0,0,6,0"/>
+                                                        <Button Grid.Column="2"
+                                                                Content="Browse…"
+                                                                Style="{StaticResource ToolbarButton}"
+                                                                Tag="{Binding}"
+                                                                Click="BrowseMapTexture_Click"
+                                                                ToolTip="Choose a texture file and copy it into this model's folder"/>
                                                     </Grid>
                                                 </DataTemplate>
                                             </ItemsControl.ItemTemplate>
