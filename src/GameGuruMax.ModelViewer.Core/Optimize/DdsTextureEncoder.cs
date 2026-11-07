@@ -25,14 +25,21 @@ public static class DdsTextureEncoder
     public static bool IsDds(string path)
         => Path.GetExtension(path).Equals(".dds", StringComparison.OrdinalIgnoreCase);
 
-    public static void ConvertRasterToDds(string sourcePath, string destDdsPath, int maxResolution)
+    public static void ConvertRasterToDds(
+        string sourcePath,
+        string destDdsPath,
+        int maxResolution,
+        OptimizeEncodeProfile profile = OptimizeEncodeProfile.Faster)
     {
         using var source = LoadBitmap(sourcePath);
-        using var working = MaybeResize(source, maxResolution);
-        EncodeBitmapToDds(working, destDdsPath);
+        using var working = MaybeResize(source, maxResolution, profile);
+        EncodeBitmapToDds(working, destDdsPath, profile);
     }
 
-    public static void ResizeDdsInPlace(string ddsPath, int maxResolution)
+    public static void ResizeDdsInPlace(
+        string ddsPath,
+        int maxResolution,
+        OptimizeEncodeProfile profile = OptimizeEncodeProfile.Faster)
     {
         if (maxResolution <= 0)
             return;
@@ -41,11 +48,11 @@ public static class DdsTextureEncoder
         if (loaded.Width <= maxResolution && loaded.Height <= maxResolution)
             return;
 
-        using var resized = MaybeResize(loaded, maxResolution);
+        using var resized = MaybeResize(loaded, maxResolution, profile);
         var temp = ddsPath + ".tmp.dds";
         try
         {
-            EncodeBitmapToDds(resized, temp);
+            EncodeBitmapToDds(resized, temp, profile);
             File.Copy(temp, ddsPath, overwrite: true);
         }
         finally
@@ -55,7 +62,10 @@ public static class DdsTextureEncoder
         }
     }
 
-    public static void ResizeRasterInPlace(string path, int maxResolution)
+    public static void ResizeRasterInPlace(
+        string path,
+        int maxResolution,
+        OptimizeEncodeProfile profile = OptimizeEncodeProfile.Faster)
     {
         if (maxResolution <= 0)
             return;
@@ -64,7 +74,7 @@ public static class DdsTextureEncoder
         if (source.Width <= maxResolution && source.Height <= maxResolution)
             return;
 
-        using var resized = MaybeResize(source, maxResolution);
+        using var resized = MaybeResize(source, maxResolution, profile);
         var ext = Path.GetExtension(path).ToLowerInvariant();
         var format = ext switch
         {
@@ -148,7 +158,7 @@ public static class DdsTextureEncoder
         return new Bitmap(temp);
     }
 
-    private static Bitmap MaybeResize(Bitmap source, int maxResolution)
+    private static Bitmap MaybeResize(Bitmap source, int maxResolution, OptimizeEncodeProfile profile)
     {
         // Keep original aspect / pixel size when possible. Only shrink if a max edge is set.
         var w = source.Width;
@@ -170,12 +180,27 @@ public static class DdsTextureEncoder
         var dest = new Bitmap(aw, ah, DrawingPixelFormat.Format32bppArgb);
         using var g = Graphics.FromImage(dest);
         g.CompositingMode = CompositingMode.SourceCopy;
+        ApplyResizeQuality(g, profile);
+        g.DrawImage(source, 0, 0, aw, ah);
+        return dest;
+    }
+
+    private static void ApplyResizeQuality(Graphics g, OptimizeEncodeProfile profile)
+    {
+        // High-quality GDI+ bicubic can wake the GPU on some drivers; Fast keeps it light.
+        if (profile == OptimizeEncodeProfile.Faster)
+        {
+            g.CompositingQuality = CompositingQuality.HighSpeed;
+            g.InterpolationMode = InterpolationMode.Bilinear;
+            g.SmoothingMode = SmoothingMode.HighSpeed;
+            g.PixelOffsetMode = PixelOffsetMode.HighSpeed;
+            return;
+        }
+
         g.CompositingQuality = CompositingQuality.HighQuality;
         g.InterpolationMode = InterpolationMode.HighQualityBicubic;
         g.SmoothingMode = SmoothingMode.HighQuality;
         g.PixelOffsetMode = PixelOffsetMode.HighQuality;
-        g.DrawImage(source, 0, 0, aw, ah);
-        return dest;
     }
 
     /// <summary>Nearest multiple of 4 (required for BC compression), minimum 4.</summary>
@@ -258,7 +283,7 @@ public static class DdsTextureEncoder
         return bmp;
     }
 
-    private static void EncodeBitmapToDds(Bitmap bitmap, string destPath)
+    private static void EncodeBitmapToDds(Bitmap bitmap, string destPath, OptimizeEncodeProfile profile)
     {
         // Ensure block alignment without forcing 512/1024/2048 — keep e.g. 512x1012 as-is.
         Bitmap? owned = null;
@@ -273,7 +298,7 @@ public static class DdsTextureEncoder
             owned = new Bitmap(aw, ah, DrawingPixelFormat.Format32bppArgb);
             using var g = Graphics.FromImage(owned);
             g.CompositingMode = CompositingMode.SourceCopy;
-            g.InterpolationMode = InterpolationMode.HighQualityBicubic;
+            ApplyResizeQuality(g, profile);
             g.DrawImage(bitmap, 0, 0, aw, ah);
             work = owned;
             w = aw;
@@ -319,11 +344,7 @@ public static class DdsTextureEncoder
             }
 
             var encoder = new BcEncoder();
-            // Mipmaps are safest on power-of-two; keep unconventional sizes without forcing POT.
-            encoder.OutputOptions.GenerateMipMaps = IsPowerOfTwo(w) && IsPowerOfTwo(h);
-            encoder.OutputOptions.Quality = CompressionQuality.Balanced;
-            encoder.OutputOptions.Format = hasAlpha ? CompressionFormat.Bc7 : CompressionFormat.Bc1;
-            encoder.OutputOptions.FileFormat = OutputFileFormat.Dds;
+            ConfigureEncoder(encoder, w, h, hasAlpha, profile);
 
             var dds = encoder.EncodeToDds(rgba, w, h, BCnEncoder.Encoder.PixelFormat.Rgba32);
             using var fs = File.Create(destPath);
@@ -332,6 +353,38 @@ public static class DdsTextureEncoder
         finally
         {
             owned?.Dispose();
+        }
+    }
+
+    private static void ConfigureEncoder(
+        BcEncoder encoder,
+        int width,
+        int height,
+        bool hasAlpha,
+        OptimizeEncodeProfile profile)
+    {
+        encoder.OutputOptions.FileFormat = OutputFileFormat.Dds;
+
+        switch (profile)
+        {
+            case OptimizeEncodeProfile.Faster:
+                // BC3 (DXT5) is far cheaper than BC7 and widely used by GameGuru.
+                encoder.OutputOptions.GenerateMipMaps = false;
+                encoder.OutputOptions.Quality = CompressionQuality.Fast;
+                encoder.OutputOptions.Format = hasAlpha ? CompressionFormat.Bc3 : CompressionFormat.Bc1;
+                break;
+
+            case OptimizeEncodeProfile.Highest:
+                encoder.OutputOptions.GenerateMipMaps = IsPowerOfTwo(width) && IsPowerOfTwo(height);
+                encoder.OutputOptions.Quality = CompressionQuality.BestQuality;
+                encoder.OutputOptions.Format = hasAlpha ? CompressionFormat.Bc7 : CompressionFormat.Bc1;
+                break;
+
+            default:
+                encoder.OutputOptions.GenerateMipMaps = IsPowerOfTwo(width) && IsPowerOfTwo(height);
+                encoder.OutputOptions.Quality = CompressionQuality.Balanced;
+                encoder.OutputOptions.Format = hasAlpha ? CompressionFormat.Bc7 : CompressionFormat.Bc1;
+                break;
         }
     }
 }

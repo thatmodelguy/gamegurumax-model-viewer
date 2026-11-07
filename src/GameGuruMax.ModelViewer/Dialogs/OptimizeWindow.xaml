@@ -35,7 +35,14 @@
                 <DockPanel Margin="0,0,0,8">
                     <TextBlock Text="Max resolution" VerticalAlignment="Center" Margin="0,0,10,0"
                                Foreground="{StaticResource BrushTextMuted}"/>
-                    <ComboBox x:Name="ResolutionBox" Width="200" HorizontalAlignment="Left"/>
+                    <ComboBox x:Name="ResolutionBox" Width="220" HorizontalAlignment="Left"/>
+                </DockPanel>
+
+                <DockPanel Margin="0,0,0,8">
+                    <TextBlock Text="Encoding speed" VerticalAlignment="Center" Margin="0,0,10,0"
+                               Foreground="{StaticResource BrushTextMuted}"
+                               ToolTip="Texture compression runs on the CPU. Heavier settings can still spin laptop GPU fans via shared cooling."/>
+                    <ComboBox x:Name="EncodeProfileBox" Width="320" HorizontalAlignment="Left"/>
                 </DockPanel>
 
                 <CheckBox x:Name="DeleteOriginalsCheck"
@@ -48,7 +55,7 @@
                           Checked="OptionsChanged" Unchecked="OptionsChanged"/>
 
             <TextBlock TextWrapping="Wrap" FontSize="11" Foreground="{StaticResource BrushTextMuted}" Margin="0,4,0,12"
-                       Text="Already-DDS textures (including surface maps) are skipped for conversion, but will still resize when a max resolution is set. Unconventional sizes (not 512/1024/2048/…) convert at their real pixel size — e.g. 512×1012 stays 512×1012 — so UVs still fit. Use Max resolution only if you want them scaled down."/>
+                       Text="Conversion is CPU work (not 3D rendering). Prefer Faster on laptops/low-end PCs — it uses BC1/BC3 and skips mipmaps so fans stay quieter. Balanced/Highest use BC7 for alpha and take much longer. Unconventional sizes stay as-is unless you set Max resolution."/>
 
                 <TextBlock Text="Files to process" FontWeight="SemiBold" Foreground="{StaticResource BrushAccent}" Margin="0,0,0,6"/>
                 <ListBox x:Name="PlanList" Height="200"

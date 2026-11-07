@@ -1,5 +1,19 @@
 namespace GameGuruMax.ModelViewer.Core.Optimize;
 
+/// <summary>
+/// Controls how hard texture encoding works. Conversion is CPU-based, but heavy
+/// BC7 work can still make laptop fans (including GPU fans on shared coolers) ramp up.
+/// </summary>
+public enum OptimizeEncodeProfile
+{
+    /// <summary>BC1/BC3, fast quality, no mipmaps — best for laptops / low-end PCs.</summary>
+    Faster = 0,
+    /// <summary>BC1/BC7, balanced quality, mipmaps on power-of-two sizes.</summary>
+    Balanced = 1,
+    /// <summary>BC1/BC7, best quality, mipmaps on power-of-two sizes — slowest.</summary>
+    Highest = 2
+}
+
 public sealed class OptimizeOptions
 {
     /// <summary>Convert PNG/JPEG (and similar) to DDS. Already-DDS files are not re-converted.</summary>
@@ -16,6 +30,9 @@ public sealed class OptimizeOptions
 
     /// <summary>When true, process every entity in the selected entity's folder.</summary>
     public bool EntireFolder { get; init; }
+
+    /// <summary>Encoding effort / format tradeoff. Default is Faster for cooler/quieter runs.</summary>
+    public OptimizeEncodeProfile EncodeProfile { get; init; } = OptimizeEncodeProfile.Faster;
 }
 
 public sealed class OptimizeFilePlan

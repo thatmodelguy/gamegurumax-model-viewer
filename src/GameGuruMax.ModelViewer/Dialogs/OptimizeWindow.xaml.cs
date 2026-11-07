@@ -49,6 +49,25 @@ public partial class OptimizeWindow : Window
         ConvertCheck.Checked += (_, _) => RebuildPlan();
         ConvertCheck.Unchecked += (_, _) => RebuildPlan();
 
+        EncodeProfileBox.Items.Add(new ComboBoxItem
+        {
+            Content = "Faster — low-end / laptop friendly (BC1/BC3)",
+            Tag = OptimizeEncodeProfile.Faster,
+            IsSelected = true
+        });
+        EncodeProfileBox.Items.Add(new ComboBoxItem
+        {
+            Content = "Balanced — BC7 alpha, mipmaps (heavier)",
+            Tag = OptimizeEncodeProfile.Balanced
+        });
+        EncodeProfileBox.Items.Add(new ComboBoxItem
+        {
+            Content = "Highest quality — slowest, most CPU heat",
+            Tag = OptimizeEncodeProfile.Highest
+        });
+        EncodeProfileBox.SelectedIndex = 0;
+        EncodeProfileBox.SelectionChanged += (_, _) => RebuildPlan();
+
         // Multi-select already chose the targets — hide "entire folder" expand option.
         if (_targets.Count > 1)
             FolderCheck.Visibility = Visibility.Collapsed;
@@ -64,12 +83,17 @@ public partial class OptimizeWindow : Window
         if (ResolutionBox.SelectedItem is ComboBoxItem { Tag: int tag })
             max = tag;
 
+        var profile = OptimizeEncodeProfile.Faster;
+        if (EncodeProfileBox.SelectedItem is ComboBoxItem { Tag: OptimizeEncodeProfile selected })
+            profile = selected;
+
         return new OptimizeOptions
         {
             ConvertToDds = ConvertCheck.IsChecked == true,
             MaxResolution = max,
             DeleteOriginalsAfterConvert = DeleteOriginalsCheck.IsChecked == true,
-            EntireFolder = FolderCheck.IsChecked == true && _targets.Count == 1
+            EntireFolder = FolderCheck.IsChecked == true && _targets.Count == 1,
+            EncodeProfile = profile
         };
     }
 
@@ -119,11 +143,17 @@ public partial class OptimizeWindow : Window
             PlanList.Items.Add("WARN: " + w);
 
         var work = _plan.Files.Count(f => f.Action is not "Skip");
+        var profileNote = options.EncodeProfile switch
+        {
+            OptimizeEncodeProfile.Faster => "Faster encode",
+            OptimizeEncodeProfile.Highest => "Highest quality encode",
+            _ => "Balanced encode"
+        };
         StatusLine.Text = work == 0
             ? "Nothing to do with current options."
             : unconventionalCount > 0
-                ? $"{work} file(s) to process ({unconventionalCount} unconventional size). Leave Max resolution on Original to keep exact dimensions."
-                : $"{work} file(s) will be processed; {_plan.FpePathsToTouch.Count} FPE(s) may be updated.";
+                ? $"{work} file(s) · {profileNote} · {unconventionalCount} unconventional size(s). Leave Max resolution on Original to keep exact dimensions."
+                : $"{work} file(s) · {profileNote} · {_plan.FpePathsToTouch.Count} FPE(s) may be updated.";
         RunButton.IsEnabled = work > 0;
     }
 
@@ -138,11 +168,21 @@ public partial class OptimizeWindow : Window
             return;
 
         var unconventional = _plan.Files.Where(f => f.IsUnconventionalSize && f.Action is not "Skip").ToList();
+        var formatLine = options.EncodeProfile switch
+        {
+            OptimizeEncodeProfile.Faster =>
+                "PNG/JPEG → DDS uses BC1 (opaque) or BC3 (transparency), fast quality, no mipmaps.",
+            OptimizeEncodeProfile.Highest =>
+                "PNG/JPEG → DDS uses BC1 (opaque) or BC7 (transparency), highest quality (slow / hotter).",
+            _ =>
+                "PNG/JPEG → DDS uses BC1 (opaque) or BC7 (transparency), balanced quality."
+        };
         var message =
             $"Process {work} texture file(s)?\n\n" +
-            "PNG/JPEG → DDS uses BC1 (opaque) or BC7 (transparency).\n" +
+            formatLine + "\n" +
             "Existing DDS (including surface maps) are only resized when requested.\n" +
-            "FPE map paths will be updated to .dds names.";
+            "FPE map paths will be updated to .dds names.\n\n" +
+            "Note: encoding runs on the CPU at lower process priority to ease system load.";
 
         if (unconventional.Count > 0)
         {

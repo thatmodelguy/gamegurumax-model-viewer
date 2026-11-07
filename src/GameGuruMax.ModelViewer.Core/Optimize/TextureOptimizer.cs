@@ -206,6 +206,21 @@ public static class TextureOptimizer
         var renames = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase); // oldFileName -> newFileName (leaf)
         var renamesFull = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase); // oldFull -> newFull
 
+        // Encoding is CPU-heavy; drop priority so the rest of the PC stays more responsive
+        // and shared laptop coolers are less likely to peg GPU fans as hard.
+        var process = System.Diagnostics.Process.GetCurrentProcess();
+        var previousPriority = process.PriorityClass;
+        try
+        {
+            process.PriorityClass = System.Diagnostics.ProcessPriorityClass.BelowNormal;
+        }
+        catch
+        {
+            // Some hosts disallow priority changes — continue anyway.
+        }
+
+        try
+        {
         foreach (var file in plan.Files)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -227,7 +242,8 @@ public static class TextureOptimizer
 
                     case "Convert":
                     case "Convert+Resize":
-                        DdsTextureEncoder.ConvertRasterToDds(file.SourcePath, file.DestinationPath, options.MaxResolution);
+                        DdsTextureEncoder.ConvertRasterToDds(
+                            file.SourcePath, file.DestinationPath, options.MaxResolution, options.EncodeProfile);
                         renames[Path.GetFileName(file.SourcePath)] = Path.GetFileName(file.DestinationPath);
                         renamesFull[Path.GetFullPath(file.SourcePath)] = Path.GetFullPath(file.DestinationPath);
                         if (options.DeleteOriginalsAfterConvert
@@ -240,12 +256,14 @@ public static class TextureOptimizer
                         break;
 
                     case "Resize":
-                        DdsTextureEncoder.ResizeDdsInPlace(file.SourcePath, options.MaxResolution);
+                        DdsTextureEncoder.ResizeDdsInPlace(
+                            file.SourcePath, options.MaxResolution, options.EncodeProfile);
                         result.Resized++;
                         break;
 
                     case "ResizeRaster":
-                        DdsTextureEncoder.ResizeRasterInPlace(file.SourcePath, options.MaxResolution);
+                        DdsTextureEncoder.ResizeRasterInPlace(
+                            file.SourcePath, options.MaxResolution, options.EncodeProfile);
                         result.Resized++;
                         break;
                 }
@@ -254,6 +272,14 @@ public static class TextureOptimizer
             {
                 result.Errors.Add($"{Path.GetFileName(file.SourcePath)}: {ex.Message}");
             }
+
+            // Brief pause between files so cooling / scheduling can catch up on weak machines.
+            Thread.Sleep(options.EncodeProfile == OptimizeEncodeProfile.Faster ? 25 : 10);
+        }
+        }
+        finally
+        {
+            try { process.PriorityClass = previousPriority; } catch { /* ignore */ }
         }
 
         if (renames.Count == 0)
